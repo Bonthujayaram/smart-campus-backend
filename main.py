@@ -35,7 +35,8 @@ app.add_middleware(
         "http://10.9.7.73:5173",
         "http://10.9.7.73:3000",
         "https://cutmcampusassitant.netlify.app",
-        "https://smart-campus-backend-ty7w.onrender.com"
+        "https://smart-campus-backend-ty7w.onrender.com",
+        "wss://smart-campus-backend-ty7w.onrender.com"
         # Removed wildcard "*" as it's not compatible with credentials
     ],
     allow_credentials=True,
