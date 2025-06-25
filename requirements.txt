@@ -1,0 +1,16 @@
+fastapi==0.110.0
+uvicorn==0.27.1
+sqlalchemy==2.0.28
+pydantic==2.6.3
+python-dotenv==1.0.1
+mysql-connector-python==8.3.0
+python-multipart==0.0.9
+typing-extensions==4.10.0
+python-jose==3.3.0
+passlib==1.7.4
+bcrypt==4.1.2
+requests==2.31.0
+aiofiles==24.1.0
+pillow==10.2.0
+python-magic==0.4.27
+pymysql==1.1.0 
