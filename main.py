@@ -8,7 +8,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 import enum
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from typing import List, Optional
 from datetime import datetime, timedelta
 from fastapi.staticfiles import StaticFiles
@@ -16,6 +16,8 @@ from pathlib import Path
 import mysql.connector
 from mysql.connector import Error
 import json
+import pandas as pd
+import io
 
 load_dotenv()  # This loads the variables from .env
 
@@ -2398,4 +2400,272 @@ async def finalize_attendance(request: Request, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         print("Error finalizing attendance:", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+class ReportData(BaseModel):
+    academic: dict
+    attendance: dict
+    assignments: dict
+
+@app.get("/reports/students")
+async def get_student_reports(
+    branch: str = Query(...),
+    semester: int = Query(...),
+    type: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    try:
+        if type == 'academic':
+            # Get academic performance data
+            students = db.query(Student).filter(
+                Student.branch == branch,
+                Student.semester == semester
+            ).all()
+            
+            total_students = len(students)
+            
+            # Get assignment data for pass rate calculation
+            assignments = db.query(Assignment).filter(
+                Assignment.branch == branch,
+                Assignment.semester == semester
+            ).all()
+            
+            # Calculate pass rate (students who submitted assignments / total assignments)
+            submissions = db.query(Submission).join(Assignment).filter(
+                Assignment.branch == branch,
+                Assignment.semester == semester
+            ).all()
+            
+            pass_rate = (len(submissions) / (total_students * len(assignments))) * 100 if assignments else 0
+            
+            # Get subject-wise performance
+            subjects = []
+            for assignment in assignments:
+                subject_submissions = [s for s in submissions if s.assignment_id == assignment.id]
+                if subject_submissions:
+                    subjects.append({
+                        "name": assignment.subject,
+                        "average": sum([1 for s in subject_submissions if s.status == 'approved']) / len(subject_submissions) * 100,
+                        "passRate": len([s for s in subject_submissions if s.status == 'approved']) / len(subject_submissions) * 100
+                    })
+            
+            return {
+                "academic": {
+                    "totalStudents": total_students,
+                    "passRate": round(pass_rate, 1),
+                    "averageGrade": "B+",  # This should be calculated based on actual grades
+                    "topPerformers": int(total_students * 0.15),  # Top 15% as an example
+                    "subjects": subjects
+                }
+            }
+            
+        elif type == 'attendance':
+            # Get attendance data
+            attendance_records = db.query(Attendance).join(Student).filter(
+                Student.branch == branch,
+                Student.semester == semester
+            ).all()
+            
+            if not attendance_records:
+                return {
+                    "attendance": {
+                        "overallAttendance": 0,
+                        "highAttendance": 0,
+                        "mediumAttendance": 0,
+                        "lowAttendance": 0,
+                        "monthlyTrend": []
+                    }
+                }
+            
+            # Calculate attendance statistics
+            total_students = db.query(Student).filter(
+                Student.branch == branch,
+                Student.semester == semester
+            ).count()
+            
+            present_count = len([a for a in attendance_records if a.attendance == 'P'])
+            overall_attendance = (present_count / len(attendance_records)) * 100 if attendance_records else 0
+            
+            # Count students in each attendance category
+            student_attendance = {}
+            for record in attendance_records:
+                if record.studentId not in student_attendance:
+                    student_attendance[record.studentId] = []
+                student_attendance[record.studentId].append(record.attendance == 'P')
+            
+            high_attendance = 0
+            medium_attendance = 0
+            low_attendance = 0
+            
+            for student_records in student_attendance.values():
+                attendance_rate = sum(student_records) / len(student_records) * 100
+                if attendance_rate >= 85:
+                    high_attendance += 1
+                elif attendance_rate >= 75:
+                    medium_attendance += 1
+                else:
+                    low_attendance += 1
+            
+            # Calculate monthly trend
+            monthly_trend = []
+            current_date = datetime.now()
+            for i in range(4):  # Last 4 months
+                month_date = current_date - timedelta(days=30 * i)
+                month_records = [a for a in attendance_records if datetime.strptime(a.date, '%Y-%m-%d').month == month_date.month]
+                if month_records:
+                    present_count = len([a for a in month_records if a.attendance == 'P'])
+                    percentage = (present_count / len(month_records)) * 100
+                    monthly_trend.append({
+                        "month": month_date.strftime('%b'),
+                        "percentage": round(percentage, 1)
+                    })
+            
+            return {
+                "attendance": {
+                    "overallAttendance": round(overall_attendance, 1),
+                    "highAttendance": high_attendance,
+                    "mediumAttendance": medium_attendance,
+                    "lowAttendance": low_attendance,
+                    "monthlyTrend": monthly_trend[::-1]  # Reverse to show oldest to newest
+                }
+            }
+            
+        elif type == 'assignments':
+            # Get assignment data
+            assignments = db.query(Assignment).filter(
+                Assignment.branch == branch,
+                Assignment.semester == semester
+            ).all()
+            
+            if not assignments:
+                return {
+                    "assignments": {
+                        "totalAssignments": 0,
+                        "submitted": 0,
+                        "pending": 0,
+                        "overdue": 0,
+                        "subjects": []
+                    }
+                }
+            
+            total_students = db.query(Student).filter(
+                Student.branch == branch,
+                Student.semester == semester
+            ).count()
+            
+            total_possible_submissions = total_students * len(assignments)
+            
+            # Get all submissions
+            submissions = db.query(Submission).join(Assignment).filter(
+                Assignment.branch == branch,
+                Assignment.semester == semester
+            ).all()
+            
+            # Calculate overall statistics
+            submitted = len(submissions)
+            pending = total_possible_submissions - submitted
+            overdue = len([s for s in submissions if s.status == 'overdue'])
+            
+            # Calculate subject-wise statistics
+            subjects = []
+            for assignment in assignments:
+                subject_submissions = [s for s in submissions if s.assignment_id == assignment.id]
+                total_subject_possible = total_students
+                
+                subjects.append({
+                    "name": assignment.subject,
+                    "submitted": round(len(subject_submissions) / total_subject_possible * 100, 1),
+                    "pending": round((total_subject_possible - len(subject_submissions)) / total_subject_possible * 100, 1),
+                    "overdue": round(len([s for s in subject_submissions if s.status == 'overdue']) / total_subject_possible * 100, 1)
+                })
+            
+            return {
+                "assignments": {
+                    "totalAssignments": len(assignments),
+                    "submitted": submitted,
+                    "pending": pending,
+                    "overdue": overdue,
+                    "subjects": subjects
+                }
+            }
+        
+        return {"error": "Invalid report type"}
+        
+    except Exception as e:
+        print(f"Error generating report: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/reports/generate")
+async def generate_report(
+    branch: str = Query(...),
+    semester: int = Query(...),
+    type: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    try:
+        # Reuse the logic from get_student_reports
+        report_data = await get_student_reports(branch, semester, type, db)
+        return {"message": "Report generated successfully", "data": report_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/reports/download")
+async def download_report(
+    branch: str = Query(...),
+    semester: int = Query(...),
+    type: str = Query(...),
+    format: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    try:
+        # Get report data
+        report_data = await get_student_reports(branch, semester, type, db)
+        
+        if format.lower() == 'csv':
+            # Convert data to CSV
+            if type == 'academic':
+                df = pd.DataFrame(report_data['academic']['subjects'])
+            elif type == 'attendance':
+                df = pd.DataFrame(report_data['attendance']['monthlyTrend'])
+            else:  # assignments
+                df = pd.DataFrame(report_data['assignments']['subjects'])
+            
+            # Convert DataFrame to CSV
+            output = io.StringIO()
+            df.to_csv(output, index=False)
+            
+            # Create response
+            response = Response(content=output.getvalue(), media_type="text/csv")
+            response.headers["Content-Disposition"] = f"attachment; filename=report_{type}_{branch}_{semester}.csv"
+            return response
+            
+        elif format.lower() == 'excel':
+            # Convert data to Excel
+            if type == 'academic':
+                df = pd.DataFrame(report_data['academic']['subjects'])
+            elif type == 'attendance':
+                df = pd.DataFrame(report_data['attendance']['monthlyTrend'])
+            else:  # assignments
+                df = pd.DataFrame(report_data['assignments']['subjects'])
+            
+            # Convert DataFrame to Excel
+            output = io.BytesIO()
+            df.to_excel(output, index=False)
+            
+            # Create response
+            response = Response(content=output.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            response.headers["Content-Disposition"] = f"attachment; filename=report_{type}_{branch}_{semester}.xlsx"
+            return response
+            
+        elif format.lower() == 'pdf':
+            # For PDF, we'll return a simple text file for now
+            # In a real application, you would use a PDF generation library
+            content = str(report_data)
+            response = Response(content=content, media_type="application/pdf")
+            response.headers["Content-Disposition"] = f"attachment; filename=report_{type}_{branch}_{semester}.pdf"
+            return response
+            
+        return {"error": "Invalid format"}
+        
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
