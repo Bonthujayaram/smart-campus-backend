@@ -17,4 +17,4 @@ pymysql
 websockets
 pandas
 openpyxl 
-email-validaton
+email-validaton=1.1.3
