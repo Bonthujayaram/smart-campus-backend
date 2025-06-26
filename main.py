@@ -42,7 +42,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"]  # Added to ensure all response headers are accessible
+    expose_headers=["*"],  # Added to ensure all response headers are accessible
+    max_age=3600  # Cache preflight requests for 1 hour
 )
 # Mount static files directory
 uploads_path = Path("uploads")
@@ -723,13 +724,30 @@ def delete_assignment(assignment_id: int, db: Session = Depends(get_db)):
 
 @app.post("/students/bulk-delete")
 def bulk_delete_students(ids: dict = Body(...), db: Session = Depends(get_db)):
-    # ids should be a dict with key 'ids' and value as list of student IDs
-    student_ids = ids.get("ids", [])
-    if not isinstance(student_ids, list) or not all(isinstance(i, int) for i in student_ids):
-        raise HTTPException(status_code=400, detail="Invalid input. 'ids' must be a list of integers.")
-    deleted_count = db.query(Student).filter(Student.studentId.in_(student_ids)).delete(synchronize_session=False)
-    db.commit()
-    return {"success": True, "deleted": deleted_count, "message": f"Deleted {deleted_count} students."}
+    try:
+        # ids should be a dict with key 'ids' and value as list of student IDs
+        student_ids = ids.get("ids", [])
+        if not isinstance(student_ids, list) or not all(isinstance(i, int) for i in student_ids):
+            raise HTTPException(status_code=400, detail="Invalid input. 'ids' must be a list of integers.")
+
+        # First, delete related records in other tables
+        # Delete submissions
+        db.query(Submission).filter(Submission.student_id.in_(student_ids)).delete(synchronize_session=False)
+        
+        # Delete attendance records
+        db.query(Attendance).filter(Attendance.studentId.in_(student_ids)).delete(synchronize_session=False)
+        
+        # Delete temporary attendance records
+        db.query(TemporaryAttendance).filter(TemporaryAttendance.student_id.in_(student_ids)).delete(synchronize_session=False)
+        
+        # Finally, delete the students
+        deleted_count = db.query(Student).filter(Student.studentId.in_(student_ids)).delete(synchronize_session=False)
+        
+        db.commit()
+        return {"success": True, "deleted": deleted_count, "message": f"Deleted {deleted_count} students."}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/dashboard-stats")
 def get_dashboard_stats(db: Session = Depends(get_db)):
