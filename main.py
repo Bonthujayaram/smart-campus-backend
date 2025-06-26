@@ -37,13 +37,12 @@ app.add_middleware(
         "https://cutmcampusassitant.netlify.app",
         "https://smart-campus-backend-ty7w.onrender.com",
         "wss://smart-campus-backend-ty7w.onrender.com"
-        # Removed wildcard "*" as it's not compatible with credentials
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],  # Added to ensure all response headers are accessible
-    max_age=3600  # Cache preflight requests for 1 hour
+    expose_headers=["*"],
+    max_age=3600
 )
 # Mount static files directory
 uploads_path = Path("uploads")
@@ -634,16 +633,24 @@ def create_syllabus(entry: SyllabusCreate, db: Session = Depends(get_db)):
         result["upload_date"] = str(new_entry.upload_date)
     return result
 
-@app.put("/syllabus/{syllabus_id}", response_model=SyllabusOut)
-def update_syllabus(syllabus_id: int, entry: SyllabusUpdate, db: Session = Depends(get_db)):
-    syllabus = db.query(Syllabus).filter(Syllabus.id == syllabus_id).first()
-    if not syllabus:
-        raise HTTPException(status_code=404, detail="Syllabus entry not found")
-    for key, value in entry.dict().items():
-        setattr(syllabus, key, value)
-    db.commit()
-    db.refresh(syllabus)
-    return syllabus
+@app.put("/syllabus/{syllabus_id}")
+def update_syllabus(syllabus_id: int, syllabus: dict = Body(...), db: Session = Depends(get_db)):
+    try:
+        db_syllabus = db.query(Syllabus).filter(Syllabus.id == syllabus_id).first()
+        if not db_syllabus:
+            raise HTTPException(status_code=404, detail="Syllabus not found")
+
+        # Update fields
+        for key, value in syllabus.items():
+            if hasattr(db_syllabus, key):
+                setattr(db_syllabus, key, value)
+
+        db.commit()
+        db.refresh(db_syllabus)
+        return db_syllabus
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/syllabus/{syllabus_id}")
 def delete_syllabus(syllabus_id: int, db: Session = Depends(get_db)):
