@@ -26,17 +26,12 @@ app = FastAPI()
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://cutmcampusassitant.netlify.app",
-        "https://smart-campus-backend-ty7w.onrender.com",
-        "wss://smart-campus-backend-ty7w.onrender.com"
-    ],
+    allow_origins=["https://cutmcampusassitant.netlify.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
-    max_age=3600
 )
+
 # Mount static files directory
 uploads_path = Path("uploads")
 uploads_path.mkdir(exist_ok=True)
